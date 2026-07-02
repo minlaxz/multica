@@ -6,7 +6,7 @@ need to notice upstream drift.
 
 | File | What it is |
 | --- | --- |
-| `openapi.yaml` | OpenAPI 3.0 spec, hand-derived from source at commit `5ed381a9d` (2026-07-02) |
+| `openapi.yaml` | OpenAPI 3.0 spec, hand-derived from source at commit `cd0281e4f` (2026-07-02) |
 | `routes.json` | Auto-generated route inventory (`METHOD /path`, sorted) — the diffable surface |
 | `index.html` | Static rendered docs (Redoc), generated from `openapi.yaml` |
 

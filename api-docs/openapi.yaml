@@ -1,6 +1,6 @@
 # Multica REST API — OpenAPI 3.0.3
 #
-# HAND-DERIVED from source at commit 5ed381a9d (2026-07-02). Multica ships no
+# HAND-DERIVED from source at commit cd0281e4f (2026-07-02). Multica ships no
 # machine-generated spec; the sources of truth are:
 #   - server/cmd/server/router.go            (route registrations)
 #   - packages/core/api/client.ts            (request shapes used by the official frontend)
@@ -24,7 +24,7 @@ info:
     REST API of the Multica task-management platform, as implemented by the Go
     backend (`server/`). Derived by hand from the Chi router and the official
     TypeScript client; not published or guaranteed stable by upstream.
-  version: 5ed381a9d
+  version: cd0281e4f
 servers:
   - url: http://localhost:8080
     description: Local dev server (`make server`)
@@ -159,7 +159,30 @@ paths:
   /api/upload-file:
     post: { tags: [attachments], summary: Upload a file (multipart), responses: { "200": { $ref: "#/components/responses/Generic" } } }
   /api/feedback:
-    post: { tags: [me], summary: Submit product feedback, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    post:
+      tags: [me]
+      summary: Submit product feedback
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string }
+                url: { type: string }
+                workspace_id: { type: string, format: uuid }
+                kind: { type: string, description: "bug | feature | general | praise (open string)" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  created_at: { type: string, format: date-time }
 
   # -------------------------------------------------------------------------
   # Personal access tokens — the credential for external API consumers
@@ -281,6 +304,7 @@ paths:
         - { name: project_id, in: query, schema: { type: string } }
         - { name: status, in: query, schema: { type: string } }
         - { name: assignee_id, in: query, schema: { type: string } }
+        - { name: assignee_types, in: query, schema: { type: string }, description: "Comma-separated assignee types, e.g. member,agent" }
         - { name: limit, in: query, schema: { type: integer } }
         - { name: offset, in: query, schema: { type: integer } }
       responses:
