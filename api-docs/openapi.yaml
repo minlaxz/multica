@@ -1,0 +1,1177 @@
+# Multica REST API — OpenAPI 3.0.3
+#
+# HAND-DERIVED from source at commit 5ed381a9d (2026-07-02). Multica ships no
+# machine-generated spec; the sources of truth are:
+#   - server/cmd/server/router.go            (route registrations)
+#   - packages/core/api/client.ts            (request shapes used by the official frontend)
+#   - packages/core/api/schemas.ts           (zod response schemas)
+#   - packages/core/types/*.ts               (TS response types)
+#
+# Coverage policy (deliberate):
+#   - EVERY route in router.go is listed (path + method + summary) so this file
+#     is diffable against upstream route changes.
+#   - Full request/response schemas are provided for the endpoints relevant to
+#     external tracking/reporting integrations (auth, workspaces, members,
+#     issues, comments, timeline, projects, tasks, dashboard rollups, agent
+#     activity). Everything else returns `GenericObject`/`GenericArray` — see
+#     the source files above for exact shapes when you need them.
+#   - Server enums are documented as plain strings: upstream's own frontend
+#     treats them leniently and new values appear without notice.
+openapi: 3.0.3
+info:
+  title: Multica API
+  description: >
+    REST API of the Multica task-management platform, as implemented by the Go
+    backend (`server/`). Derived by hand from the Chi router and the official
+    TypeScript client; not published or guaranteed stable by upstream.
+  version: 5ed381a9d
+servers:
+  - url: http://localhost:8080
+    description: Local dev server (`make server`)
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+# Two credential types for external callers:
+#   1. Personal Access Token (PAT, prefix `mul_`) — create via
+#      POST /api/tokens or the Settings UI. Send as `Authorization: Bearer mul_...`.
+#   2. Session cookie — browser flow only (POST /auth/send-code + verify-code).
+# Workspace-scoped routes ALSO require workspace selection via the
+# `X-Workspace-ID` (UUID) or `X-Workspace-Slug` header.
+security:
+  - bearerAuth: []
+
+tags:
+  - name: public
+  - name: auth
+  - name: me
+  - name: workspaces
+  - name: members
+  - name: invitations
+  - name: tokens
+  - name: issues
+  - name: comments
+  - name: labels
+  - name: projects
+  - name: squads
+  - name: agents
+  - name: skills
+  - name: tasks
+  - name: dashboard
+  - name: runtimes
+  - name: chat
+  - name: inbox
+  - name: attachments
+  - name: pins
+  - name: autopilots
+  - name: integrations
+  - name: cloud
+  - name: daemon
+  - name: webhooks
+
+paths:
+  # -------------------------------------------------------------------------
+  # Health / public
+  # -------------------------------------------------------------------------
+  /health:
+    get: { tags: [public], security: [], summary: Liveness check, responses: { "200": { description: OK } } }
+  /readyz:
+    get: { tags: [public], security: [], summary: Readiness check, responses: { "200": { description: OK } } }
+  /healthz:
+    get: { tags: [public], security: [], summary: Readiness check (alias of /readyz), responses: { "200": { description: OK } } }
+  /health/realtime:
+    get: { tags: [public], security: [], summary: Realtime subsystem metrics (loopback or REALTIME_METRICS_TOKEN bearer), responses: { "200": { description: JSON metrics } } }
+  /ws:
+    get:
+      tags: [public]
+      summary: Workspace realtime WebSocket (event push — issue/comment/task updates)
+      description: >
+        Upgrade to WebSocket. Auth via session cookie or PAT. See
+        packages/core/api/ws-client.ts for the event contract. Useful for a
+        tracking system that wants push instead of polling.
+      responses: { "101": { description: Switching Protocols } }
+  /api/config:
+    get:
+      tags: [public]
+      security: []
+      summary: Public app configuration
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/AppConfig" } } }
+  /api/contact-sales:
+    post: { tags: [public], security: [], summary: Contact-sales form (rate-limited), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Auth (public, rate-limited)
+  # -------------------------------------------------------------------------
+  /auth/send-code:
+    post:
+      tags: [auth]
+      security: []
+      summary: Send email login code
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string } }, required: [email] }
+      responses: { "200": { $ref: "#/components/responses/Generic" } }
+  /auth/verify-code:
+    post:
+      tags: [auth]
+      security: []
+      summary: Verify email code, establish session
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string }, code: { type: string } }, required: [email, code] }
+      responses: { "200": { $ref: "#/components/responses/Generic" } }
+  /auth/google:
+    post: { tags: [auth], security: [], summary: Google OAuth login, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /auth/logout:
+    post: { tags: [auth], security: [], summary: End session, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Current user
+  # -------------------------------------------------------------------------
+  /api/me:
+    get:
+      tags: [me]
+      summary: Current user
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/User" } } } }
+    patch:
+      tags: [me]
+      summary: Update current user
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/User" } } } }
+  /api/me/onboarding:
+    patch: { tags: [me], summary: Patch onboarding questionnaire, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/me/onboarding/complete:
+    post: { tags: [me], summary: Mark onboarding complete, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/me/onboarding/cloud-waitlist:
+    post: { tags: [me], summary: Join cloud waitlist, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/me/onboarding/runtime-bootstrap:
+    post: { tags: [me], deprecated: true, summary: "DEPRECATED shim (desktop < v3)", responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/me/onboarding/no-runtime-bootstrap:
+    post: { tags: [me], deprecated: true, summary: "DEPRECATED shim (desktop < v3)", responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cli-token:
+    post: { tags: [tokens], summary: Issue CLI token, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/upload-file:
+    post: { tags: [attachments], summary: Upload a file (multipart), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/feedback:
+    post: { tags: [me], summary: Submit product feedback, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Personal access tokens — the credential for external API consumers
+  # -------------------------------------------------------------------------
+  /api/tokens:
+    get: { tags: [tokens], summary: List personal access tokens, responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [tokens], summary: Create personal access token (returns plaintext `mul_` token once), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/tokens/current/renew:
+    post: { tags: [tokens], summary: Renew the token used for this request, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/tokens/{id}:
+    delete:
+      tags: [tokens]
+      summary: Revoke personal access token
+      parameters: [{ $ref: "#/components/parameters/PathId" }]
+      responses: { "200": { $ref: "#/components/responses/Generic" } }
+
+  # -------------------------------------------------------------------------
+  # Workspaces & members
+  # -------------------------------------------------------------------------
+  /api/workspaces:
+    get:
+      tags: [workspaces]
+      summary: List workspaces the caller belongs to
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Workspace" } } } } }
+    post: { tags: [workspaces], summary: Create workspace, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}:
+    parameters: [{ $ref: "#/components/parameters/PathId" }]
+    get:
+      tags: [workspaces]
+      summary: Get workspace (member)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Workspace" } } } }
+    put: { tags: [workspaces], summary: Update workspace (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    patch: { tags: [workspaces], summary: Update workspace (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [workspaces], summary: Delete workspace (owner), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/members:
+    parameters: [{ $ref: "#/components/parameters/PathId" }]
+    get:
+      tags: [members]
+      summary: List members with user profile — the roster a tracking system joins actor_id against
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/MemberWithUser" } } } } }
+    post: { tags: [members], summary: Invite member (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/members/{memberId}:
+    parameters: [{ $ref: "#/components/parameters/PathId" }, { name: memberId, in: path, required: true, schema: { type: string } }]
+    patch: { tags: [members], summary: Update member role (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [members], summary: Remove member (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/leave:
+    post: { tags: [members], summary: Leave workspace, parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/invitations:
+    get: { tags: [invitations], summary: List workspace invitations, parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/workspaces/{id}/invitations/{invitationId}:
+    delete: { tags: [invitations], summary: Revoke invitation (admin), parameters: [{ $ref: "#/components/parameters/PathId" }, { name: invitationId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/runtime-profiles:
+    parameters: [{ $ref: "#/components/parameters/PathId" }]
+    get: { tags: [runtimes], summary: List runtime profiles, responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [runtimes], summary: Create runtime profile (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/runtime-profiles/{profileId}:
+    parameters: [{ $ref: "#/components/parameters/PathId" }, { name: profileId, in: path, required: true, schema: { type: string } }]
+    get: { tags: [runtimes], summary: Get runtime profile, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    patch: { tags: [runtimes], summary: Update runtime profile (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    put: { tags: [runtimes], summary: Update runtime profile (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [runtimes], summary: Delete runtime profile (admin), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/github/installations:
+    get: { tags: [integrations], summary: List GitHub installations, parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/workspaces/{id}/github/connect:
+    get: { tags: [integrations], summary: Start GitHub App connect (admin), parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/github/installations/{installationId}:
+    delete: { tags: [integrations], summary: Disconnect GitHub installation (admin), parameters: [{ $ref: "#/components/parameters/PathId" }, { name: installationId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/lark/installations:
+    get: { tags: [integrations], summary: List Lark installations, parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/workspaces/{id}/lark/installations/{installationId}:
+    delete: { tags: [integrations], summary: Revoke Lark installation (admin), parameters: [{ $ref: "#/components/parameters/PathId" }, { name: installationId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/lark/install/begin:
+    post: { tags: [integrations], summary: Begin Lark device-flow install (admin), parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/lark/install/{sessionId}/status:
+    get: { tags: [integrations], summary: Poll Lark install status, parameters: [{ $ref: "#/components/parameters/PathId" }, { name: sessionId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/slack/installations:
+    get: { tags: [integrations], summary: List Slack installations, parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/workspaces/{id}/slack/installations/{installationId}:
+    delete: { tags: [integrations], summary: Revoke Slack installation (admin), parameters: [{ $ref: "#/components/parameters/PathId" }, { name: installationId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/workspaces/{id}/slack/install/byo:
+    post: { tags: [integrations], summary: Register bring-your-own Slack app (admin), parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/lark/binding/redeem:
+    post: { tags: [integrations], summary: Redeem Lark user binding token, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/slack/binding/redeem:
+    post: { tags: [integrations], summary: Redeem Slack user binding token, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  /api/invitations:
+    get:
+      tags: [invitations]
+      summary: List my invitations
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Invitation" } } } } }
+  /api/invitations/{id}:
+    get: { tags: [invitations], summary: Get my invitation, parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/invitations/{id}/accept:
+    post: { tags: [invitations], summary: Accept invitation, parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/invitations/{id}/decline:
+    post: { tags: [invitations], summary: Decline invitation, parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Issues (workspace-scoped: send X-Workspace-ID)
+  # -------------------------------------------------------------------------
+  /api/assignee-frequency:
+    get:
+      tags: [issues]
+      summary: Assignment frequency per assignee (member or agent)
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/AssigneeFrequencyEntry" } } } } }
+  /api/issues:
+    get:
+      tags: [issues]
+      summary: List issues
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - { name: project_id, in: query, schema: { type: string } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: assignee_id, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: offset, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ListIssuesResponse" } } } }
+    post:
+      tags: [issues]
+      summary: Create issue
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Issue" } } } }
+        "409": { description: Active duplicate issue, content: { application/json: { schema: { $ref: "#/components/schemas/DuplicateIssueError" } } } }
+  /api/issues/search:
+    get: { tags: [issues], summary: Full-text search issues, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: q, in: query, schema: { type: string } }], responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ListIssuesResponse" } } } } } }
+  /api/issues/child-progress:
+    get: { tags: [issues], summary: Child-issue completion progress per parent, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/issues/children:
+    get: { tags: [issues], summary: List children keyed by parent ids, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/grouped:
+    get: { tags: [issues], summary: Issues grouped by assignee, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/quick-create:
+    post: { tags: [issues], summary: Quick-create issue from natural language (agent authors it), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/preview-trigger:
+    post: { tags: [issues], summary: Preview which agents an issue create would trigger, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/batch-update:
+    post: { tags: [issues], summary: Batch update issues, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/batch-delete:
+    post: { tags: [issues], summary: Batch delete issues, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get:
+      tags: [issues]
+      summary: Get issue (UUID or human identifier like PROJ-42)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Issue" } } } }
+    put:
+      tags: [issues]
+      summary: Update issue (status/assignee changes land in the activity log)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Issue" } } } }
+    delete: { tags: [issues], summary: Delete issue, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/timeline:
+    get:
+      tags: [issues]
+      summary: Issue timeline — merged activity-log entries + comments, oldest first. PRIMARY source for who-did-what-when.
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/TimelineEntry" } } } } }
+  /api/issues/{id}/comments:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get:
+      tags: [comments]
+      summary: List comments
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Comment" } } } } }
+    post:
+      tags: [comments]
+      summary: Create comment
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Comment" } } } }
+  /api/issues/{id}/comments/trigger-preview:
+    post: { tags: [comments], summary: Preview agent triggers for a comment, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/subscribers:
+    get: { tags: [issues], summary: List issue subscribers, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/issues/{id}/subscribe:
+    post: { tags: [issues], summary: Subscribe to issue, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/unsubscribe:
+    post: { tags: [issues], summary: Unsubscribe from issue, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/active-task:
+    get: { tags: [tasks], summary: Active agent task for issue, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AgentTask" } } } } } }
+  /api/issues/{id}/tasks/{taskId}/cancel:
+    post: { tags: [tasks], summary: Cancel task on issue, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/rerun:
+    post: { tags: [tasks], summary: Re-run agent on issue, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/task-runs:
+    get:
+      tags: [tasks]
+      summary: All agent task runs for an issue (created/started/completed timestamps → agent time-on-task)
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/AgentTask" } } } } }
+  /api/issues/{id}/usage:
+    get: { tags: [issues], summary: Token/cost usage for an issue's agent runs, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/reactions:
+    post: { tags: [issues], summary: Add reaction, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [issues], summary: Remove reaction, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/attachments:
+    get: { tags: [attachments], summary: List issue attachments, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/issues/{id}/children:
+    get: { tags: [issues], summary: List child issues, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/labels:
+    get: { tags: [labels], summary: List labels on issue, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [labels], summary: Attach label, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/labels/{labelId}:
+    delete: { tags: [labels], summary: Detach label, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: labelId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/metadata:
+    get: { tags: [issues], summary: List issue metadata, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/metadata/{key}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: key, in: path, required: true, schema: { type: string } }]
+    put: { tags: [issues], summary: Set metadata key (primitive values only), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [issues], summary: Delete metadata key, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/issues/{id}/pull-requests:
+    get: { tags: [issues], summary: Linked pull requests, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/issues/{id}/squad-evaluated:
+    post: { tags: [squads], summary: Record squad-leader evaluation (writes to activity_log), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Comments (standalone mutations)
+  # -------------------------------------------------------------------------
+  /api/comments/{commentId}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: commentId, in: path, required: true, schema: { type: string } }]
+    put: { tags: [comments], summary: Update comment, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [comments], summary: Delete comment, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/comments/{commentId}/resolve:
+    post: { tags: [comments], summary: Resolve comment, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: commentId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [comments], summary: Unresolve comment, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: commentId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/comments/{commentId}/reactions:
+    post: { tags: [comments], summary: Add reaction, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: commentId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [comments], summary: Remove reaction, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: commentId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Labels
+  # -------------------------------------------------------------------------
+  /api/labels:
+    get: { tags: [labels], summary: List labels, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [labels], summary: Create label, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/labels/{id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [labels], summary: Get label, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    put: { tags: [labels], summary: Update label, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [labels], summary: Delete label, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Projects
+  # -------------------------------------------------------------------------
+  /api/projects:
+    get:
+      tags: [projects]
+      summary: List projects (includes issue_count / done_count rollups)
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Project" } } } } }
+    post: { tags: [projects], summary: Create project, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/projects/search:
+    get: { tags: [projects], summary: Search projects, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: q, in: query, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/projects/{id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get:
+      tags: [projects]
+      summary: Get project
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Project" } } } }
+    put: { tags: [projects], summary: Update project, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [projects], summary: Delete project, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/projects/{id}/resources:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [projects], summary: List project resources, responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [projects], summary: Create project resource, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/projects/{id}/resources/{resourceId}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: resourceId, in: path, required: true, schema: { type: string } }]
+    put: { tags: [projects], summary: Update project resource, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [projects], summary: Delete project resource, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Squads
+  # -------------------------------------------------------------------------
+  /api/squads:
+    get: { tags: [squads], summary: List squads, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [squads], summary: Create squad, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/squads/{id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [squads], summary: Get squad, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    put: { tags: [squads], summary: Update squad, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [squads], summary: Delete squad, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/squads/{id}/members:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [squads], summary: List squad members, responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [squads], summary: Add squad member, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [squads], summary: Remove squad member, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/squads/{id}/members/status:
+    get:
+      tags: [squads]
+      summary: Per-member live status + active issues + last_active_at (presence signal for tracking)
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SquadMemberStatusList" } } } }
+  /api/squads/{id}/members/role:
+    patch: { tags: [squads], summary: Update squad member role, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Agents
+  # -------------------------------------------------------------------------
+  /api/agents:
+    get: { tags: [agents], summary: List agents, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [agents], summary: Create agent, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agents/from-template:
+    post: { tags: [agents], summary: Create agent from template, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agents/{id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [agents], summary: Get agent, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    put: { tags: [agents], summary: Update agent, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agents/{id}/archive:
+    post: { tags: [agents], summary: Archive agent, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agents/{id}/restore:
+    post: { tags: [agents], summary: Restore agent, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agents/{id}/cancel-tasks:
+    post: { tags: [agents], summary: Cancel all agent tasks, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agents/{id}/tasks:
+    get:
+      tags: [agents]
+      summary: List agent's tasks (per-agent workload history)
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/AgentTask" } } } } }
+  /api/agents/{id}/skills:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [agents], summary: List agent skills, responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    put: { tags: [agents], summary: Set agent skills, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agents/{id}/skills/add:
+    post: { tags: [agents], summary: Add agent skills, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agents/{id}/env:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [agents], summary: Get agent env (admin; audited), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    put: { tags: [agents], summary: Update agent env (admin; audited), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agent-templates:
+    get: { tags: [agents], summary: List agent templates, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/agent-templates/{slug}:
+    get: { tags: [agents], summary: Get agent template, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: slug, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agent-task-snapshot:
+    get: { tags: [agents], summary: "Workspace agent-task snapshot: every active task + each agent's latest terminal task (presence)", parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agent-activity-30d:
+    get: { tags: [agents], summary: Daily agent activity, last 30 days (anchored on completed_at), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/agent-run-counts:
+    get: { tags: [agents], summary: 30-day run counts per agent, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Skills
+  # -------------------------------------------------------------------------
+  /api/skills:
+    get: { tags: [skills], summary: List skills, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [skills], summary: Create skill, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/skills/search:
+    get: { tags: [skills], summary: Search skills, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/skills/import:
+    post: { tags: [skills], summary: Import skill from URL, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/skills/{id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [skills], summary: Get skill, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    put: { tags: [skills], summary: Update skill, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [skills], summary: Delete skill, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/skills/{id}/files:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [skills], summary: List skill files, responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    put: { tags: [skills], summary: Upsert skill file, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/skills/{id}/files/{fileId}:
+    delete: { tags: [skills], summary: Delete skill file, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: fileId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Dashboard rollups — closest thing to a built-in "time spent" API
+  # (agent run-time only; human time is NOT tracked, derive it from
+  # /api/issues/{id}/timeline status transitions)
+  # -------------------------------------------------------------------------
+  /api/dashboard/usage/daily:
+    get:
+      tags: [dashboard]
+      summary: Daily token usage per provider/model (optional ?project_id filter)
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/ProjectIdFilter" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/DashboardUsageDaily" } } } } }
+  /api/dashboard/usage/by-agent:
+    get:
+      tags: [dashboard]
+      summary: Token usage per agent
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/ProjectIdFilter" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/DashboardUsageByAgent" } } } } }
+  /api/dashboard/agent-runtime:
+    get:
+      tags: [dashboard]
+      summary: Total run seconds + task counts per agent
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/ProjectIdFilter" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/DashboardAgentRunTime" } } } } }
+  /api/dashboard/runtime/daily:
+    get:
+      tags: [dashboard]
+      summary: Daily run seconds + task counts
+      parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/ProjectIdFilter" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/DashboardRunTimeDaily" } } } } }
+
+  # -------------------------------------------------------------------------
+  # Runtimes
+  # -------------------------------------------------------------------------
+  /api/runtimes:
+    get: { tags: [runtimes], summary: List agent runtimes, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/runtimes/{runtimeId}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }]
+    patch: { tags: [runtimes], summary: Update runtime, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [runtimes], summary: Delete runtime (refuses if active agents), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/usage:
+    get: { tags: [runtimes], summary: Runtime token usage by day, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/runtimes/{runtimeId}/usage/by-agent:
+    get: { tags: [runtimes], summary: Runtime usage by agent, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/runtimes/{runtimeId}/usage/by-hour:
+    get: { tags: [runtimes], summary: Runtime usage by hour, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/runtimes/{runtimeId}/activity:
+    get: { tags: [runtimes], summary: Runtime hourly task activity, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/runtimes/{runtimeId}/update:
+    post: { tags: [runtimes], summary: Initiate runtime update, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/update/{updateId}:
+    get: { tags: [runtimes], summary: Poll runtime update, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }, { name: updateId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/models:
+    post: { tags: [runtimes], summary: Initiate model listing, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/models/{requestId}:
+    get: { tags: [runtimes], summary: Poll model listing, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }, { $ref: "#/components/parameters/RequestId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/local-skills:
+    post: { tags: [runtimes], summary: Initiate local-skill listing, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/local-skills/{requestId}:
+    get: { tags: [runtimes], summary: Poll local-skill listing, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }, { $ref: "#/components/parameters/RequestId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/local-skills/import:
+    post: { tags: [runtimes], summary: Initiate local-skill import, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/local-skills/import/{requestId}:
+    get: { tags: [runtimes], summary: Poll local-skill import, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }, { $ref: "#/components/parameters/RequestId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/runtimes/{runtimeId}/archive-agents-and-delete:
+    post: { tags: [runtimes], summary: Cascade delete (archive agents, cancel tasks, delete runtime), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Tasks / chat / inbox / pins / attachments / notification prefs
+  # -------------------------------------------------------------------------
+  /api/tasks/{taskId}/cancel:
+    post: { tags: [tasks], summary: Cancel task (ownership check), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/tasks/{taskId}/messages:
+    get: { tags: [tasks], summary: List task messages (user-facing), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/chat/sessions:
+    get: { tags: [chat], summary: List chat sessions, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [chat], summary: Create chat session, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/chat/sessions/{sessionId}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/SessionId" }]
+    get: { tags: [chat], summary: Get chat session, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    patch: { tags: [chat], summary: Update chat session, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [chat], summary: Delete chat session, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/chat/sessions/{sessionId}/messages:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/SessionId" }]
+    get: { tags: [chat], summary: List chat messages, responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [chat], summary: Send chat message, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/chat/sessions/{sessionId}/messages/page:
+    get: { tags: [chat], summary: Paged chat messages, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/SessionId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/chat/sessions/{sessionId}/pending-task:
+    get: { tags: [chat], summary: Pending task for session, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/SessionId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/chat/sessions/{sessionId}/read:
+    post: { tags: [chat], summary: Mark session read, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/SessionId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/chat/pending-tasks:
+    get: { tags: [chat], summary: List pending chat tasks, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/chat/history:
+    get: { tags: [chat], summary: Agent-facing channel history (task-token scoped), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/chat/thread:
+    get: { tags: [chat], summary: Agent-facing thread read (task-token scoped), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/inbox:
+    get: { tags: [inbox], summary: List inbox items, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/inbox/unread-count:
+    get: { tags: [inbox], summary: Unread count, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/inbox/unread-summary:
+    get: { tags: [inbox], summary: Cross-workspace unread summary, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+  /api/inbox/mark-all-read:
+    post: { tags: [inbox], summary: Mark all read, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/inbox/archive-all:
+    post: { tags: [inbox], summary: Archive all, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/inbox/archive-all-read:
+    post: { tags: [inbox], summary: Archive all read, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/inbox/archive-completed:
+    post: { tags: [inbox], summary: Archive completed, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/inbox/{id}/read:
+    post: { tags: [inbox], summary: Mark item read, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/inbox/{id}/archive:
+    post: { tags: [inbox], summary: Archive item, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/notification-preferences:
+    get: { tags: [inbox], summary: Get notification preferences, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    put: { tags: [inbox], summary: Update notification preferences, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/pins:
+    get: { tags: [pins], summary: List pins, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/GenericList" } } }
+    post: { tags: [pins], summary: Create pin, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/pins/reorder:
+    put: { tags: [pins], summary: Reorder pins, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/pins/{itemType}/{itemId}:
+    delete: { tags: [pins], summary: Delete pin, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { name: itemType, in: path, required: true, schema: { type: string } }, { name: itemId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/attachments/{id}:
+    get: { tags: [attachments], summary: Get attachment metadata, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [attachments], summary: Delete attachment, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/attachments/{id}/content:
+    get: { tags: [attachments], summary: Attachment content, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { description: Binary } } }
+  /api/attachments/{id}/download:
+    get: { tags: [attachments], summary: Download attachment (auth-only; workspace self-resolved), parameters: [{ $ref: "#/components/parameters/PathId" }], responses: { "200": { description: Binary } } }
+
+  # -------------------------------------------------------------------------
+  # Autopilots (summaries only — see router.go for full surface)
+  # -------------------------------------------------------------------------
+  /api/autopilots:
+    get: { tags: [autopilots], summary: List autopilots, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    post: { tags: [autopilots], summary: Create autopilot, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }]
+    get: { tags: [autopilots], summary: Get autopilot, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    patch: { tags: [autopilots], summary: Update autopilot, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [autopilots], summary: Delete autopilot, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/trigger:
+    post: { tags: [autopilots], summary: Trigger autopilot run, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/runs:
+    get: { tags: [autopilots], summary: List autopilot runs, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/runs/{runId}:
+    get: { tags: [autopilots], summary: Get autopilot run, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: runId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/deliveries:
+    get: { tags: [autopilots], summary: List webhook deliveries, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/deliveries/{deliveryId}:
+    get: { tags: [autopilots], summary: Get webhook delivery, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: deliveryId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/deliveries/{deliveryId}/replay:
+    post: { tags: [autopilots], summary: Replay webhook delivery, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: deliveryId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/triggers:
+    post: { tags: [autopilots], summary: Create trigger, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/triggers/{triggerId}:
+    parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: triggerId, in: path, required: true, schema: { type: string } }]
+    patch: { tags: [autopilots], summary: Update trigger, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [autopilots], summary: Delete trigger, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/triggers/{triggerId}/rotate-webhook-token:
+    post: { tags: [autopilots], summary: Rotate webhook token, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: triggerId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/triggers/{triggerId}/signing-secret:
+    put: { tags: [autopilots], summary: Set signing secret, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: triggerId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/collaborators:
+    post: { tags: [autopilots], summary: Add collaborator, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/autopilots/{id}/collaborators/{userId}:
+    delete: { tags: [autopilots], summary: Remove collaborator, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }, { $ref: "#/components/parameters/PathId" }, { name: userId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Cloud billing / cloud runtime proxies (summaries only)
+  # -------------------------------------------------------------------------
+  /api/cloud-billing/balance:
+    get: { tags: [cloud], summary: Billing balance (human actor only), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-billing/transactions:
+    get: { tags: [cloud], summary: Billing transactions, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-billing/batches:
+    get: { tags: [cloud], summary: Billing credit batches, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-billing/topups:
+    get: { tags: [cloud], summary: Billing topups, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-billing/price-tiers:
+    get: { tags: [cloud], summary: Billing price tiers, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-billing/checkout-sessions:
+    post: { tags: [cloud], summary: Create checkout session, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-billing/checkout-sessions/{sessionId}:
+    get: { tags: [cloud], summary: Get checkout session, parameters: [{ $ref: "#/components/parameters/SessionId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-billing/portal-sessions:
+    post: { tags: [cloud], summary: Create billing portal session, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime:
+    get: { tags: [cloud], summary: Cloud runtime service info (503 self-hosted), parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime/healthz:
+    get: { tags: [cloud], summary: Cloud runtime health, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime/readyz:
+    get: { tags: [cloud], summary: Cloud runtime ready, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime/nodes:
+    get: { tags: [cloud], summary: List cloud runtime nodes, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    post: { tags: [cloud], summary: Create cloud runtime node, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    delete: { tags: [cloud], summary: Delete cloud runtime node, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime/nodes/start:
+    post: { tags: [cloud], summary: Start node, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime/nodes/stop:
+    post: { tags: [cloud], summary: Stop node, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime/nodes/reboot:
+    post: { tags: [cloud], summary: Reboot node, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime/nodes/status:
+    post: { tags: [cloud], summary: Node status, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/cloud-runtime/nodes/exec:
+    post: { tags: [cloud], summary: Exec on node, parameters: [{ $ref: "#/components/parameters/WorkspaceId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Webhook ingress (public, self-authenticated)
+  # -------------------------------------------------------------------------
+  /api/webhooks/autopilots/{token}:
+    post: { tags: [webhooks], security: [], summary: Autopilot webhook ingress (token in path IS the credential), parameters: [{ name: token, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/webhooks/github:
+    post: { tags: [webhooks], security: [], summary: GitHub App webhook (HMAC-SHA256 verified), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/webhooks/stripe:
+    post: { tags: [webhooks], security: [], summary: Stripe webhook (signature verified upstream), responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/github/setup:
+    get: { tags: [webhooks], security: [], summary: GitHub post-install setup callback, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+  # -------------------------------------------------------------------------
+  # Daemon API (runtime daemon <-> server; daemon token or user token).
+  # Internal surface — listed for diff coverage only.
+  # -------------------------------------------------------------------------
+  /api/daemon/register:
+    post: { tags: [daemon], summary: Register daemon runtime, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/deregister:
+    post: { tags: [daemon], summary: Deregister daemon runtime, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/heartbeat:
+    post: { tags: [daemon], summary: Daemon heartbeat, responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/ws:
+    get: { tags: [daemon], summary: Daemon WebSocket, responses: { "101": { description: Switching Protocols } } }
+  /api/daemon/workspaces/{workspaceId}/repos:
+    get: { tags: [daemon], summary: Workspace repos for daemon, parameters: [{ name: workspaceId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/workspaces/{workspaceId}/runtime-profiles:
+    get: { tags: [daemon], summary: Runtime profiles for daemon, parameters: [{ name: workspaceId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/tasks/claim:
+    post: { tags: [daemon], summary: Claim next task, parameters: [{ $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/prepare-lease:
+    post: { tags: [daemon], summary: Extend prepare lease, parameters: [{ $ref: "#/components/parameters/RuntimeId" }, { $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/tasks/{taskId}/skill-bundles/resolve:
+    post: { tags: [daemon], summary: Resolve skill bundles, parameters: [{ $ref: "#/components/parameters/RuntimeId" }, { $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/tasks/pending:
+    get: { tags: [daemon], summary: List pending tasks, parameters: [{ $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/update/{updateId}/result:
+    post: { tags: [daemon], summary: Report update result, parameters: [{ $ref: "#/components/parameters/RuntimeId" }, { name: updateId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/models/{requestId}/result:
+    post: { tags: [daemon], summary: Report model list result, parameters: [{ $ref: "#/components/parameters/RuntimeId" }, { $ref: "#/components/parameters/RequestId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/local-skills/{requestId}/result:
+    post: { tags: [daemon], summary: Report local-skill list result, parameters: [{ $ref: "#/components/parameters/RuntimeId" }, { $ref: "#/components/parameters/RequestId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/local-skills/import/{requestId}/result:
+    post: { tags: [daemon], summary: Report local-skill import result, parameters: [{ $ref: "#/components/parameters/RuntimeId" }, { $ref: "#/components/parameters/RequestId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/status:
+    get: { tags: [daemon], summary: Task status, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/start:
+    post: { tags: [daemon], summary: Start task, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/wait-local-directory:
+    post: { tags: [daemon], summary: Mark waiting for local directory, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/progress:
+    post: { tags: [daemon], summary: Report progress, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/complete:
+    post: { tags: [daemon], summary: Complete task, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/fail:
+    post: { tags: [daemon], summary: Fail task, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/usage:
+    post: { tags: [daemon], summary: Report token usage, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/messages:
+    get: { tags: [daemon], summary: List task messages, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+    post: { tags: [daemon], summary: Report task messages, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/session:
+    post: { tags: [daemon], summary: Pin task session, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/tasks/{taskId}/gc-check:
+    get: { tags: [daemon], summary: Task GC check, parameters: [{ $ref: "#/components/parameters/TaskId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/issues/{issueId}/gc-check:
+    get: { tags: [daemon], summary: Issue GC check, parameters: [{ name: issueId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/chat-sessions/{sessionId}/gc-check:
+    get: { tags: [daemon], summary: Chat session GC check, parameters: [{ $ref: "#/components/parameters/SessionId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/autopilot-runs/{runId}/gc-check:
+    get: { tags: [daemon], summary: Autopilot run GC check, parameters: [{ name: runId, in: path, required: true, schema: { type: string } }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+  /api/daemon/runtimes/{runtimeId}/recover-orphans:
+    post: { tags: [daemon], summary: Recover orphaned tasks, parameters: [{ $ref: "#/components/parameters/RuntimeId" }], responses: { "200": { $ref: "#/components/responses/Generic" } } }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "Personal access token (`mul_...`), created via POST /api/tokens or Settings > API tokens."
+
+  parameters:
+    WorkspaceId:
+      name: X-Workspace-ID
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+      description: Workspace selector. `X-Workspace-Slug` is accepted as an alternative.
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    TaskId:
+      name: taskId
+      in: path
+      required: true
+      schema: { type: string }
+    RuntimeId:
+      name: runtimeId
+      in: path
+      required: true
+      schema: { type: string }
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      schema: { type: string }
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema: { type: string }
+    ProjectIdFilter:
+      name: project_id
+      in: query
+      required: false
+      schema: { type: string, format: uuid }
+
+  responses:
+    Generic:
+      description: OK — shape not modeled here; see packages/core/api/client.ts and schemas.ts.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/GenericObject" }
+    GenericList:
+      description: OK — array; shape not modeled here; see packages/core/api/client.ts and schemas.ts.
+      content:
+        application/json:
+          schema: { type: array, items: { $ref: "#/components/schemas/GenericObject" } }
+
+  schemas:
+    GenericObject:
+      type: object
+      additionalProperties: true
+
+    AppConfig:
+      type: object
+      properties:
+        cdn_domain: { type: string }
+        cdn_signed: { type: boolean }
+        allow_signup: { type: boolean }
+        google_client_id: { type: string }
+        posthog_key: { type: string }
+        posthog_host: { type: string }
+        analytics_environment: { type: string }
+        daemon_server_url: { type: string }
+        daemon_app_url: { type: string }
+        workspace_creation_disabled: { type: boolean }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        avatar_url: { type: string, nullable: true }
+        onboarded_at: { type: string, format: date-time, nullable: true }
+        onboarding_questionnaire: { type: object, additionalProperties: true }
+        starter_content_state: { type: string, nullable: true }
+        language: { type: string, nullable: true }
+        profile_description: { type: string }
+        timezone: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Workspace:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string, nullable: true }
+        context: { type: string, nullable: true }
+        settings: { type: object, additionalProperties: true }
+        repos:
+          type: array
+          items:
+            type: object
+            properties:
+              url: { type: string }
+              description: { type: string }
+        issue_prefix: { type: string }
+        avatar_url: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    MemberWithUser:
+      type: object
+      description: Workspace member joined with user profile.
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        role: { type: string, description: "owner | admin | member" }
+        created_at: { type: string, format: date-time }
+        name: { type: string }
+        email: { type: string }
+        avatar_url: { type: string, nullable: true }
+
+    Invitation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        inviter_id: { type: string, format: uuid }
+        invitee_email: { type: string }
+        invitee_user_id: { type: string, nullable: true }
+        role: { type: string }
+        status: { type: string, description: "pending | accepted | declined | expired" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+
+    Issue:
+      type: object
+      description: >
+        Assignees are polymorphic: assignee_type ("member" | "agent") +
+        assignee_id. Same for creator_type/creator_id.
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        number: { type: integer }
+        identifier: { type: string, description: "Human id, e.g. PROJ-42" }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        status: { type: string, description: "Server enum as string (e.g. backlog/todo/in_progress/done/cancelled); treat unknown values gracefully" }
+        priority: { type: string }
+        assignee_type: { type: string, nullable: true, description: "member | agent" }
+        assignee_id: { type: string, nullable: true }
+        creator_type: { type: string }
+        creator_id: { type: string }
+        parent_issue_id: { type: string, nullable: true }
+        project_id: { type: string, nullable: true }
+        position: { type: number }
+        stage: { type: integer, nullable: true }
+        start_date: { type: string, nullable: true }
+        due_date: { type: string, nullable: true }
+        metadata: { type: object, additionalProperties: true }
+        labels: { type: array, items: { $ref: "#/components/schemas/GenericObject" } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ListIssuesResponse:
+      type: object
+      properties:
+        issues:
+          type: array
+          items: { $ref: "#/components/schemas/Issue" }
+        total: { type: integer }
+
+    DuplicateIssueError:
+      type: object
+      properties:
+        code: { type: string, enum: [active_duplicate_issue] }
+        error: { type: string }
+        issue:
+          type: object
+          properties:
+            id: { type: string }
+            identifier: { type: string }
+            title: { type: string }
+
+    TimelineEntry:
+      type: object
+      description: >
+        Union of activity-log rows (type=activity: action + details) and
+        comments (type=comment: content + reactions). actor_type is
+        member | agent | system. Status/assignee changes appear as activity
+        entries — this is the raw material for time-in-status derivation.
+      properties:
+        type: { type: string, description: "activity | comment" }
+        id: { type: string }
+        actor_type: { type: string, description: "member | agent | system" }
+        actor_id: { type: string }
+        created_at: { type: string, format: date-time }
+        action: { type: string, description: "Activity only, e.g. status_changed, assignee_changed" }
+        details: { type: object, additionalProperties: true, description: "Activity only; JSONB payload (old/new values)" }
+        content: { type: string, description: "Comment only" }
+        parent_id: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+        comment_type: { type: string }
+        reactions: { type: array, items: { $ref: "#/components/schemas/Reaction" } }
+        attachments: { type: array, items: { $ref: "#/components/schemas/GenericObject" } }
+        source_task_id: { type: string, nullable: true }
+
+    Comment:
+      type: object
+      properties:
+        id: { type: string }
+        issue_id: { type: string }
+        author_type: { type: string, description: "member | agent" }
+        author_id: { type: string }
+        content: { type: string }
+        type: { type: string }
+        parent_id: { type: string, nullable: true }
+        reactions: { type: array, items: { $ref: "#/components/schemas/Reaction" } }
+        attachments: { type: array, items: { $ref: "#/components/schemas/GenericObject" } }
+        source_task_id: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Reaction:
+      type: object
+      properties:
+        id: { type: string }
+        comment_id: { type: string }
+        actor_type: { type: string }
+        actor_id: { type: string }
+        emoji: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        icon: { type: string, nullable: true }
+        status: { type: string }
+        priority: { type: string }
+        lead_type: { type: string, nullable: true, description: "member | agent" }
+        lead_id: { type: string, nullable: true }
+        issue_count: { type: integer }
+        done_count: { type: integer }
+        resource_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AgentTask:
+      type: object
+      description: >
+        Agent task run. Duration = completed_at - started_at; queue wait =
+        started_at - created_at.
+      properties:
+        id: { type: string }
+        agent_id: { type: string }
+        runtime_id: { type: string }
+        issue_id: { type: string }
+        status: { type: string, description: "queued/running/completed/failed/cancelled — treat as open string" }
+        priority: { type: integer }
+        dispatched_at: { type: string, format: date-time, nullable: true }
+        started_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        result: {}
+        error: { type: string, nullable: true }
+        failure_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        chat_session_id: { type: string }
+        autopilot_run_id: { type: string }
+        parent_task_id: { type: string }
+        attempt: { type: integer }
+        kind: { type: string }
+
+    AssigneeFrequencyEntry:
+      type: object
+      properties:
+        assignee_type: { type: string, description: "member | agent" }
+        assignee_id: { type: string }
+        frequency: { type: integer }
+
+    SquadMemberStatusList:
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            type: object
+            properties:
+              member_type: { type: string }
+              member_id: { type: string }
+              status: { type: string, nullable: true }
+              last_active_at: { type: string, format: date-time, nullable: true }
+              active_issues:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    issue_id: { type: string }
+                    identifier: { type: string }
+                    title: { type: string }
+                    issue_status: { type: string }
+
+    DashboardUsageDaily:
+      type: object
+      properties:
+        date: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        cache_read_tokens: { type: integer }
+        cache_write_tokens: { type: integer }
+        task_count: { type: integer }
+
+    DashboardUsageByAgent:
+      type: object
+      properties:
+        agent_id: { type: string }
+        provider: { type: string }
+        model: { type: string }
+        input_tokens: { type: integer }
+        output_tokens: { type: integer }
+        cache_read_tokens: { type: integer }
+        cache_write_tokens: { type: integer }
+        task_count: { type: integer }
+
+    DashboardAgentRunTime:
+      type: object
+      properties:
+        agent_id: { type: string }
+        total_seconds: { type: integer }
+        task_count: { type: integer }
+        failed_count: { type: integer }
+
+    DashboardRunTimeDaily:
+      type: object
+      properties:
+        date: { type: string }
+        total_seconds: { type: integer }
+        task_count: { type: integer }
+        failed_count: { type: integer }

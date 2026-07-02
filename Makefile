@@ -340,6 +340,12 @@ migrate-down: ## Create the target DB if needed, then roll back database migrati
 sqlc: ## Regenerate sqlc code
 	cd server && sqlc generate
 
+routedoc: ## Regenerate api-docs/routes.json from the Chi router
+	$(REQUIRE_ENV)
+	@bash scripts/ensure-postgres.sh "$(ENV_FILE)"
+	cd server && go run ./cmd/migrate up
+	cd server && ROUTEDOC=1 go test ./cmd/server -run TestGenerateRouteDocs -v
+
 # Cleanup
 ##@ Cleanup
 
